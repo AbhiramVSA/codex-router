@@ -1978,7 +1978,12 @@ merely failing them.
    bytes, and replaying it appends a second response to a stream the client is
    reading. `test/native-retry.test.mjs` asserts the caller received the partial
    stream exactly once.
-2. A generation POST additionally needs positive pre-send evidence. A reset,
+2. A generation POST additionally needs positive pre-send evidence. Node's
+   exact pre-TLS `ECONNRESET` is unsent evidence, even without `syscall`, because
+   HTTP bytes cannot cross an unestablished TLS connection. Its `host` field
+   must survive diagnostics. `test/pre-tls-retry.test.mjs` exercises real direct
+   and HTTP CONNECT handshakes, request execution counts, and replay gates.
+   A generic reset,
    missing response headers, 502/503/504, or Cloudflare 520-524 does not prove
    the origin never executed the request. The default `at-most-once` policy
    refuses ambiguous automatic replay; safe methods retain bounded transient

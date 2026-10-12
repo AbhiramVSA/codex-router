@@ -1,4 +1,5 @@
 import { rejectGenerationRedirect } from "./generation-redirect.mjs";
+import { resolveGenerationOutcome } from "./response-outcome.mjs";
 import { readFileSync } from "node:fs";
 import http from "node:http";
 import { createHash, randomUUID } from "node:crypto";
@@ -647,10 +648,10 @@ function beginRequestActivity({ request, response, controller } = {}) {
   let finished = false;
   let deadlineExceeded = false;
   let executionTimer;
-  const finish = (status) => {
+  const finish = (status, outcome) => {
     if (finished) return;
     finished = true;
-    progress.finish(status);
+    progress.finish(status, outcome);
     if (executionTimer) clearTimeout(executionTimer);
     activityRecords.delete(requestId);
     inFlightRequests.delete(requestId);
@@ -4513,6 +4514,23 @@ async function handleResponses(request, response, requestUrl) {
   let finalStatus;
   let activityStatus;
   let usageRecorded = false;
+  let generationOutcome;
+  let turnHttpStatus;
+  const recordTurnUsage = (fields, metadata) => {
+    const observer = retryUsageTransform ?? usageTransform;
+    generationOutcome = resolveGenerationOutcome({
+      observed: observer?.generationOutcome(),
+      status: fields.status,
+      canceled: fields.status === 0,
+      failed: fields.streamAborted || fields.emptyCompletion ||
+        fields.emptyCompletionUnrepairable || fields.requestDeadlineExceeded,
+      expectsTerminal: !!observer,
+    });
+    // The HTTP envelope remains committed even when a later SSE terminal fails.
+    turnHttpStatus = response.headersSent ? response.statusCode :
+      fields.status >= 100 ? fields.status : upstreamStatus;
+    recordObservedUsage({ ...fields, httpStatus: turnHttpStatus, generationOutcome }, metadata);
+  };
   bindClientAbort(request, response, () => {
     clientGone = true;
     activity.progress.cancel("client_disconnected");
@@ -4597,7 +4615,7 @@ async function handleResponses(request, response, requestUrl) {
             invalidHistoryCall.toolName || "unknown"
           } ${invalidHistoryCall.param || ""} status=400`,
         );
-        recordObservedUsage({
+        recordTurnUsage({
           ...(!route && upstreamAttempts.length ? { upstreamAttempts, deliveryPolicy: NATIVE_RETRY_POLICY } : {}),
           model: route.slug,
           provider: canonicalProviderId(route.provider),
@@ -4674,7 +4692,7 @@ async function handleResponses(request, response, requestUrl) {
           `[codex-router] skipped-unnecessary-compaction model=${route.slug} provider=${route.provider} estimated-input=${skipEstimatedTokens}`,
         );
       }
-      recordObservedUsage(
+      recordTurnUsage(
         {
           ...(!route && upstreamAttempts.length ? { upstreamAttempts, deliveryPolicy: NATIVE_RETRY_POLICY } : {}),
           model: route.slug,
@@ -5137,7 +5155,7 @@ async function handleResponses(request, response, requestUrl) {
           // cost the provider something, so it is metered on its own row. The
           // serving row below carries `failoverFrom`, which is what makes a
           // rescued turn distinguishable from one that never failed.
-          recordObservedUsage({
+          recordTurnUsage({
             ...(!route && upstreamAttempts.length ? { upstreamAttempts, deliveryPolicy: NATIVE_RETRY_POLICY } : {}),
             model: route.slug,
             provider: canonicalProviderId(route.provider),
@@ -5226,7 +5244,7 @@ async function handleResponses(request, response, requestUrl) {
         provider: route.provider,
         stream: payload.stream === true,
       });
-      recordObservedUsage({
+      recordTurnUsage({
         ...(!route && upstreamAttempts.length ? { upstreamAttempts, deliveryPolicy: NATIVE_RETRY_POLICY } : {}),
         model: route.slug,
         provider: canonicalProviderId(route.provider),
@@ -5760,7 +5778,7 @@ async function handleResponses(request, response, requestUrl) {
     // is already gone) and only rejects for an upstream that actually failed.
     // A cancel is not a router failure, so it meters as 0 rather than the
     // committed 200 that the client never finished reading.
-    recordObservedUsage({
+    recordTurnUsage({
       ...(!route && upstreamAttempts.length ? { upstreamAttempts, deliveryPolicy: NATIVE_RETRY_POLICY } : {}),
       model: route?.slug || requestedModel,
       provider: route ? canonicalProviderId(route.provider) : "openai",
@@ -5790,7 +5808,8 @@ async function handleResponses(request, response, requestUrl) {
     // The same usage this turn just metered, and the same two disqualifiers
     // context-window-drift.mjs applies to it: a substituted estimate and a
     // retry-doubled count are not measurements of what the child sent.
-    observeSubagentOutcome(request, route, finalStatus, {
+    observeSubagentOutcome(request, route,
+      generationOutcome === "completed" ? finalStatus : finalStatus === 0 ? 0 : 502, {
       emptyCompletion,
       usage,
       estimatedInputTokens,
@@ -5835,7 +5854,7 @@ async function handleResponses(request, response, requestUrl) {
       finalStatus = 504;
       activityStatus = 504;
       if (!usageRecorded) {
-        recordObservedUsage({
+        recordTurnUsage({
           ...(!route && upstreamAttempts.length ? { upstreamAttempts, deliveryPolicy: NATIVE_RETRY_POLICY } : {}),
           model: route?.slug || requestedModel,
           provider: route ? canonicalProviderId(route.provider) : "openai",
@@ -5874,7 +5893,7 @@ async function handleResponses(request, response, requestUrl) {
           param: error.param ?? null,
         },
       });
-      recordObservedUsage({
+      recordTurnUsage({
         ...(!route && upstreamAttempts.length ? { upstreamAttempts, deliveryPolicy: NATIVE_RETRY_POLICY } : {}),
         model: route?.slug || requestedModel,
         provider: route ? canonicalProviderId(route.provider) : "openai",
@@ -5895,7 +5914,7 @@ async function handleResponses(request, response, requestUrl) {
         message: error.message,
       });
       if (!response.writableEnded && !response.destroyed) response.end();
-      recordObservedUsage({
+      recordTurnUsage({
         ...(!route && upstreamAttempts.length ? { upstreamAttempts, deliveryPolicy: NATIVE_RETRY_POLICY } : {}),
         model: route?.slug || requestedModel,
         provider: route ? canonicalProviderId(route.provider) : "openai",
@@ -5923,7 +5942,7 @@ async function handleResponses(request, response, requestUrl) {
           message: error.message,
         },
       });
-      recordObservedUsage({
+      recordTurnUsage({
         ...(!route && upstreamAttempts.length ? { upstreamAttempts, deliveryPolicy: NATIVE_RETRY_POLICY } : {}),
         model: route?.slug || requestedModel,
         provider: route ? canonicalProviderId(route.provider) : "openai",
@@ -5943,7 +5962,7 @@ async function handleResponses(request, response, requestUrl) {
           message: error.message,
         },
       });
-      recordObservedUsage({
+      recordTurnUsage({
         ...(!route && upstreamAttempts.length ? { upstreamAttempts, deliveryPolicy: NATIVE_RETRY_POLICY } : {}),
         model: route?.slug || requestedModel,
         provider: route ? canonicalProviderId(route.provider) : "openai",
@@ -5992,7 +6011,7 @@ async function handleResponses(request, response, requestUrl) {
         clearStagedResponseHead(response);
         writeJson(response, 400, { error: { type: "generation_guard_error", code: error.code, message: error.message } });
       }
-      recordObservedUsage({
+      recordTurnUsage({
         ...(!route && upstreamAttempts.length ? { upstreamAttempts, deliveryPolicy: NATIVE_RETRY_POLICY } : {}),
         model: route?.slug || requestedModel,
         provider: route ? canonicalProviderId(route.provider) : "openai",
@@ -6019,7 +6038,7 @@ async function handleResponses(request, response, requestUrl) {
       finalStatus = upstreamStatus ?? response.statusCode;
       activityStatus = finalStatus;
       if (!usageRecorded) {
-        recordObservedUsage({
+        recordTurnUsage({
           ...(!route && upstreamAttempts.length ? { upstreamAttempts, deliveryPolicy: NATIVE_RETRY_POLICY } : {}),
           model: requestedModel,
           provider: "openai",
@@ -6055,7 +6074,7 @@ async function handleResponses(request, response, requestUrl) {
       finalStatus = 0;
       activityStatus = 0;
       if (!usageRecorded) {
-        recordObservedUsage({
+        recordTurnUsage({
           ...(!route && upstreamAttempts.length ? { upstreamAttempts, deliveryPolicy: NATIVE_RETRY_POLICY } : {}),
           model: route?.slug || requestedModel,
           provider: route ? canonicalProviderId(route.provider) : "openai",
@@ -6083,7 +6102,7 @@ async function handleResponses(request, response, requestUrl) {
     finalStatus = response.headersSent ? 502 : httpErrorStatus(error);
     activityStatus = finalStatus;
     if (!usageRecorded) {
-      recordObservedUsage({
+      recordTurnUsage({
         ...(!route && upstreamAttempts.length ? { upstreamAttempts, deliveryPolicy: NATIVE_RETRY_POLICY } : {}),
         model: route?.slug || requestedModel,
         provider: route ? canonicalProviderId(route.provider) : "openai",
@@ -6109,7 +6128,7 @@ async function handleResponses(request, response, requestUrl) {
     throw error;
   } finally {
     const status = activityStatus ?? finalStatus ?? response.statusCode;
-    activity.finish(status);
+    activity.finish(status, { generationOutcome, httpStatus: turnHttpStatus });
     // Timestamped per-request timing for latency diagnosis. Never gated on
     // QUIET: the production LaunchAgent hard-sets CODEX_ROUTER_QUIET=1. A
     // missing provider count is logged as unknown, not zero; an explicit zero
