@@ -20,6 +20,9 @@ function publish(phase, detail = {}) {
 publish("initialized");
 const listen = net.Server.prototype.listen;
 net.Server.prototype.listen = function (...args) {
+  const requested = args[0]?.port ?? args[0];
+  const port = Number(requested);
+  publish("binding", { port: Number.isInteger(port) ? port : undefined });
   this.once("listening", () => {
     const address = this.address();
     if (address && typeof address === "object") publish("listening", { port: address.port });

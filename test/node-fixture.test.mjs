@@ -21,12 +21,20 @@ async function fixture(t, scenario, delayMs = 0) {
 }
 
 test("cold module initialization does not consume the HTTP readiness budget", async t => {
+  const warnings = [];
+  t.mock.method(console, "error", message => warnings.push(message));
   const { child, url, messages } = await fixture(t, "ready", 1_250);
   await waitForNodeFixture(url, child, { timeoutMs: 1_000 });
   assert.ok(messages.some(message => message.nodeFixturePhase === "initialized"));
+  assert.deepEqual(messages.filter(message => message.nodeFixturePhase).map(message => message.nodeFixturePhase), ["initialized", "binding", "listening"]);
   const listening = messages.find(message => message.nodeFixturePhase === "listening");
   assert.ok(listening.elapsedMs > 1_000, "initialization must exceed the HTTP readiness budget");
   assert.ok(messages.some(message => message.nodeFixtureRequest));
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /Slow Node fixture warm-up/);
+  assert.match(warnings[0], /"phase":"listening"/);
+  assert.match(warnings[0], /"listenCpu":/);
+  assert.match(warnings[0], /"bindingMs":/);
 });
 
 test("a child that never listens still has a finite initialization deadline", async t => {

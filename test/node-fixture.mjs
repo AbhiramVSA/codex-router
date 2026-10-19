@@ -20,6 +20,10 @@ export function spawnNodeFixture(script, { cwd, env, nodeArgs = [] } = {}) {
     if (message?.nodeFixturePhase === "initialized") {
       state.phase = "initialized";
       state.initializedMs = performance.now() - state.started;
+    } else if (message?.nodeFixturePhase === "binding") {
+      state.phase = "binding";
+      state.bindingMs = performance.now() - state.started;
+      state.bindingCpu = message.cpu;
     } else if (message?.nodeFixturePhase === "listening" && Number.isInteger(message.port)) {
       state.phase = "listening";
       state.listeners.set(message.port, performance.now() - state.started);
@@ -37,6 +41,8 @@ function failure(child, state, url, reason) {
     phase: state.phase,
     elapsedMs: Math.round(performance.now() - state.started),
     initializedMs: state.initializedMs === undefined ? null : Math.round(state.initializedMs),
+    bindingMs: state.bindingMs === undefined ? null : Math.round(state.bindingMs),
+    bindingCpu: state.bindingCpu,
     listeners: [...state.listeners].map(([port, ms]) => ({ port, elapsedMs: Math.round(ms) })),
     listenCpu: state.listenCpu,
     exitCode: child.exitCode,
@@ -71,6 +77,11 @@ export async function waitForNodeFixture(url, child, {
     await delay(25);
   }
   if (state.listeners.get(port) > warmupMs) throw failure(child, state, url, "Node fixture warm-up timed out");
+  if (state.listeners.get(port) > timeoutMs) {
+    // Preserve evidence of the former failure threshold even when startup
+    // eventually succeeds; separating budgets must not hide slow starts.
+    console.error(failure(child, state, url, "Slow Node fixture warm-up").message);
+  }
   const deadline = performance.now() + timeoutMs;
   while (performance.now() < deadline) {
     assertAlive(child, state, url);
