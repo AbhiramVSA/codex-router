@@ -1,4 +1,22 @@
-# Codex Router
+<p align="center">
+  <img src="apps/control-center/assets/icon.png" alt="Codex Router project icon" width="200">
+</p>
+
+<h1 align="center">Codex Router</h1>
+
+> **Fork status:** Fork of [duolahypercho/codex-router](https://github.com/duolahypercho/codex-router). The existing project guide follows.
+
+## Overview
+
+Codex Router guides local setup of model providers for supported coding clients. The existing guide covers installation, authentication, desktop controls, updates, and rollback.
+
+## Navigation
+
+[What it does](#what-codex-router-does) · [Install](#install-everything-recommended) · [Models and authentication](#models-and-authentication) · [Updates and rollback](#updates-and-rollback) · [Documentation](#documentation)
+
+## Existing upstream guide
+
+The guide, project branding, and legal notices from the fork base remain below.
 
 ## Install everything (recommended)
 
