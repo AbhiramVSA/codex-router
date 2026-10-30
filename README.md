@@ -1,4 +1,8 @@
-# Codex Router
+<p align="center">
+  <img src="apps/control-center/assets/icon.png" alt="Codex Router project icon" width="200">
+</p>
+
+<h1 align="center">Codex Router</h1>
 
 > **Fork status:** Fork of [duolahypercho/codex-router](https://github.com/duolahypercho/codex-router). The existing project guide follows.
 
